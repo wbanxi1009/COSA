@@ -184,3 +184,6 @@ freeze
 reports
 analysis
 .DS_Store
+
+# Data
+/data
