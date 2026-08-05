@@ -46,7 +46,6 @@ fi
 
 CHECKPOINT_DIR="./checkpoints/${MODEL}/${DATASET}_${PRED_LEN}/"
 CHECKPOINT_PATH="${CHECKPOINT_DIR}checkpoint_best.pth"
-RESULT_DIR="./results/SIMPLE/"
 
 if [[ ! -f "${CHECKPOINT_PATH}" ]]; then
   echo "Checkpoint not found: ${CHECKPOINT_PATH}" >&2
@@ -66,6 +65,12 @@ BATCH_SIZE=48
 # PAAS  Configuration
 PAAS=False
 PERIOD_N=1
+
+if [[ "${PAAS}" == "True" ]]; then
+  RESULT_DIR="./results/SIMPLE/COSA_P/"
+else
+  RESULT_DIR="./results/SIMPLE/COSA_F/"
+fi
 
 # Fast Adaptation Optimization Settings
 FAST_ADAPTATION=True

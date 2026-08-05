@@ -20,7 +20,13 @@ ADAPTIVE_LR=True
 PER_BATCH_LR_RESET=True
 BASE_LR=0.001
 WEIGHT_DECAY=0.0001
-RESULT_DIR="./results/COSA/"
+
+# "SIMPLE" is required by main.py to dispatch to tta.cosa.
+if [[ "${PAAS}" == "True" ]]; then
+  RESULT_DIR="./results/SIMPLE/COSA_P/"
+else
+  RESULT_DIR="./results/SIMPLE/COSA_F/"
+fi
 
 for MODEL in "${MODELS[@]}"; do
   for DATASET in "${DATASETS[@]}"; do

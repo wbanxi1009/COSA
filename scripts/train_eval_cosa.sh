@@ -23,7 +23,11 @@ WEIGHT_DECAY=0.0001
 
 # "SIMPLE" is required by main.py to dispatch to tta.cosa.
 BASELINE_RESULT_DIR="./results/baseline"
-COSA_RESULT_DIR="./results/SIMPLE_COSA"
+if [[ "${PAAS}" == "True" ]]; then
+  COSA_RESULT_DIR="./results/SIMPLE/COSA_P"
+else
+  COSA_RESULT_DIR="./results/SIMPLE/COSA_F"
+fi
 
 for MODEL in "${MODELS[@]}"; do
   for DATASET in "${DATASETS[@]}"; do
