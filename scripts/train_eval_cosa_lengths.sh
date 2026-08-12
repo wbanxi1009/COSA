@@ -217,7 +217,7 @@ for MODEL in "${MODELS[@]}"; do
             TTA.COSA.PER_BATCH_LR_RESET "${PER_BATCH_LR_RESET}" \
             TTA.COSA.ADAPTIVE_LR "${ADAPTIVE_LR}" \
             TTA.COSA.PAAS "${PAAS}" \
-            TTA.COSA.SAVE_CSV True | tee "${COSA_EXPERIMENT_DIR}/cosa_output.log"
+            TTA.COSA.SAVE_CSV False | tee "${COSA_EXPERIMENT_DIR}/cosa_output.log"
           touch "${COSA_COMPLETE_PATH}"
         fi
       done
