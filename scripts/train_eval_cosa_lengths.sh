@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Run a resumable COSA-F sweep over models, datasets, input lengths, and
+# Run a resumable COSA sweep over models, datasets, input lengths, and
 # prediction lengths. Each combination has an independent checkpoint and result
 # directory so runs with different lengths never overwrite one another.
 
@@ -20,11 +20,13 @@ PRED_LENS=("${DEFAULT_PRED_LENS[@]}")
 # LABEL_LEN=<positive integer> when a model/dataset setup requires another value.
 LABEL_LEN="${LABEL_LEN:-48}"
 
-# COSA-F configuration. PAAS is deliberately disabled for this sweep.
+# COSA configuration. This script defaults to COSA-F; set PAAS=True to run
+# COSA-P instead.
 BUFFER_CONTEXT_SIZE=10
 STEPS=3
 BATCH_SIZE=48
-PAAS=False
+PAAS="${PAAS:-False}"
+PERIOD_N="${PERIOD_N:-1}"
 FAST_ADAPTATION=True
 ADAPTIVE_LR=True
 PER_BATCH_LR_RESET=True
@@ -35,6 +37,12 @@ CHECKPOINT_ROOT="./checkpoints"
 BASELINE_RESULT_ROOT="./results/baseline"
 # "SIMPLE" is required by main.py to dispatch to tta.cosa.
 COSA_RESULT_ROOT="./results/SIMPLE/COSA_F"
+if [[ "${PAAS}" == "True" ]]; then
+  COSA_MODE="P"
+  COSA_RESULT_ROOT="./results/SIMPLE/COSA_P"
+else
+  COSA_MODE="F"
+fi
 
 usage() {
   cat <<'EOF'
@@ -48,6 +56,7 @@ Options accept comma-separated values and form their Cartesian product.
   -h, --help               Show this help text
 
 Set LABEL_LEN in the environment to change the decoder label length (default: 48).
+Set PAAS=True and optionally PERIOD_N=<positive integer> to run COSA-P.
 
 Examples:
   bash scripts/train_eval_cosa_lengths.sh --models iTransformer --datasets ETTh1 --input-lens 96,192 --pred-lens 96,192
@@ -190,10 +199,10 @@ for MODEL in "${MODELS[@]}"; do
         fi
 
         if [[ -f "${COSA_COMPLETE_PATH}" ]]; then
-          echo "Skipping COSA-F; completed result exists: ${COSA_COMPLETE_PATH}"
+          echo "Skipping COSA-${COSA_MODE}; completed result exists: ${COSA_COMPLETE_PATH}"
         else
           mkdir -p "${COSA_EXPERIMENT_DIR}"
-          echo "Running COSA-F: model=${MODEL}, dataset=${DATASET}, input_len=${INPUT_LEN}, pred_len=${PRED_LEN}"
+          echo "Running COSA-${COSA_MODE}: model=${MODEL}, dataset=${DATASET}, input_len=${INPUT_LEN}, pred_len=${PRED_LEN}"
           python main.py \
             DATA.NAME "${DATASET}" \
             DATA.SEQ_LEN "${INPUT_LEN}" \
@@ -217,6 +226,7 @@ for MODEL in "${MODELS[@]}"; do
             TTA.COSA.PER_BATCH_LR_RESET "${PER_BATCH_LR_RESET}" \
             TTA.COSA.ADAPTIVE_LR "${ADAPTIVE_LR}" \
             TTA.COSA.PAAS "${PAAS}" \
+            TTA.COSA.PERIOD_N "${PERIOD_N}" \
             TTA.COSA.SAVE_CSV False | tee "${COSA_EXPERIMENT_DIR}/cosa_output.log"
           touch "${COSA_COMPLETE_PATH}"
         fi
