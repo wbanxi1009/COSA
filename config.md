@@ -132,6 +132,7 @@ not synchronize these pairs automatically.
 | `DATA.TIMEENC` | `0` | Active | Time-feature encoding: `0` creates month/day/weekday/hour fields; `1` uses continuous time features. |
 | `DATA.FREQ` | `h` | Active | Sampling frequency passed to time-feature generation, such as `h` for hourly. |
 | `DATA.SCALE` | `standard` | Active | Data scaling: `standard`, `min-max`, or `min-max_fixed` (skip scaling). |
+| `DATA.FRACTION` | `1.0` | Active | Fraction of the earliest chronological rows to retain before train/validation/test splitting. Use `0.5` for a half-size fast experiment. Must be in `(0, 1]`. |
 | `DATA.TRAIN_RATIO` | `0.7` | Overwritten | Training split fraction for built-in datasets. Validation receives the remainder after train and test. |
 | `DATA.TEST_RATIO` | `0.2` | Overwritten | Test split fraction for built-in datasets. |
 | `DATA.DATE_IDX` | `0` | Active | Index of the `date` column. The loader asserts that this column is named `date`. |

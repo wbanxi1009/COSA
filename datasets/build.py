@@ -41,7 +41,8 @@ class ForecastingDataset(Dataset):
         scale="standard", 
         split="train", 
         train_ratio=0.7,
-        test_ratio=0.2
+        test_ratio=0.2,
+        fraction=1.0
         ):
         assert split in ('train', 'val', 'test')
         
@@ -61,6 +62,9 @@ class ForecastingDataset(Dataset):
         self.split = split
         self.train_ratio = train_ratio
         self.test_ratio = test_ratio
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError(f"fraction must be in (0, 1], got {fraction}")
+        self.fraction = fraction
 
         self.train, self.val, self.test, self.train_stamp,  self.val_stamp, self.test_stamp = self._load_data()
         assert self.train.shape[1] == n_var
@@ -73,6 +77,8 @@ class ForecastingDataset(Dataset):
 
     def _split_data(self, df_raw: pd.DataFrame) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         assert 0.0 < self.train_ratio < 1.0 and 0.0 < self.test_ratio < 1.0 and self.train_ratio + self.test_ratio <= 1.0
+        if self.fraction < 1.0:
+            df_raw = df_raw.iloc[:int(len(df_raw) * self.fraction)]
         
         data = df_raw[df_raw.columns[1:]].values
         train_len = int(len(data) * self.train_ratio)
@@ -179,9 +185,10 @@ class Weather(ForecastingDataset):
         scale="standard", 
         split="train", 
         train_ratio=0.7,
-        test_ratio=0.2
+        test_ratio=0.2,
+        fraction=1.0
         ):
-        super(Weather, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(Weather, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'weather.csv'))
@@ -209,9 +216,10 @@ class Illness(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(Illness, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(Illness, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'illness.csv'))
@@ -239,9 +247,10 @@ class Electricity(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(Electricity, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(Electricity, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'electricity.csv'))
@@ -269,9 +278,10 @@ class Traffic(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(Traffic, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(Traffic, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'traffic.csv'))
@@ -299,9 +309,10 @@ class Exchange(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(Exchange, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(Exchange, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'exchange_rate.csv'))
@@ -329,9 +340,10 @@ class ETTh1(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(ETTh1, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(ETTh1, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'ETTh1.csv'))
@@ -359,9 +371,10 @@ class ETTh2(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(ETTh2, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(ETTh2, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'ETTh2.csv'))
@@ -389,9 +402,10 @@ class ETTm1(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(ETTm1, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(ETTm1, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'ETTm1.csv'))
@@ -419,9 +433,10 @@ class ETTm2(ForecastingDataset):
     scale="standard", 
     split="train", 
     train_ratio=0.7,
-    test_ratio=0.2
+    test_ratio=0.2,
+    fraction=1.0
     ):
-        super(ETTm2, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio)
+        super(ETTm2, self).__init__(data_dir, n_var, seq_len, label_len, pred_len, features, timeenc, freq, date_idx, target_start_idx, scale, split, train_ratio, test_ratio, fraction)
 
     def _load_data(self) -> Tuple[ndarray, ndarray, ndarray, ndarray, ndarray, ndarray]:
         df_raw = pd.read_csv(os.path.join(self.data_dir, 'ETTm2.csv'))
@@ -450,6 +465,7 @@ def build_dataset(cfg, split):
         split=split,
         train_ratio=cfg.DATA.TRAIN_RATIO,
         test_ratio=cfg.DATA.TEST_RATIO,
+        fraction=cfg.DATA.FRACTION,
     )
         
     if data_name == "weather":

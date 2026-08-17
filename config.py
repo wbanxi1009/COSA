@@ -45,6 +45,7 @@ _C.DATA.FEATURES = 'M'
 _C.DATA.TIMEENC = 0
 _C.DATA.FREQ = 'h'
 _C.DATA.SCALE = "standard"  # standard, min-max
+_C.DATA.FRACTION = 1.0  # Fraction of the earliest chronological data to use
 _C.DATA.TRAIN_RATIO = 0.7
 _C.DATA.TEST_RATIO = 0.2
 _C.DATA.DATE_IDX = 0
