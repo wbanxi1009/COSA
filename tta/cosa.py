@@ -25,7 +25,10 @@ class SimpleOutputAdapter(nn.Module):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
 
-        input_dim = self.pred_len + self.buffer_context_size
+        # Mean and variance are stored for each historical context step.
+        input_dim = self.pred_len + 2 * self.buffer_context_size
+        # Mean-only baseline:
+        # input_dim = self.pred_len + self.buffer_context_size
         output_dim = self.pred_len
         
         if self.var_wise:
@@ -303,16 +306,27 @@ class SimpleAdapter(nn.Module):
     def _get_individual_context_for_batch(self, batch_size, current_batch_idx):
 
         if len(self.sample_history) == 0:
-            return torch.zeros(batch_size, self.buffer_context_size, device='cuda')
-        
+            # Mean-only baseline:
+            # return torch.zeros(batch_size, self.buffer_context_size, device='cuda')
+            return torch.zeros(batch_size, 2 * self.buffer_context_size, device='cuda')
+
         history_size = min(self.buffer_context_size, len(self.sample_history))
-        context_values = [self.sample_history[-(i+1)]['target_mean'] 
-                         for i in range(history_size)]
-        
-        if len(context_values) < self.buffer_context_size:
-            last_val = context_values[-1] if context_values else 0.0
-            context_values.extend([last_val] * (self.buffer_context_size - len(context_values)))
-        
+        context_values = []
+        for i in range(history_size):
+            batch_info = self.sample_history[-(i + 1)]
+            context_values.extend([batch_info['target_mean'], batch_info['target_var']])
+        # Mean-only baseline:
+        # context_values = [self.sample_history[-(i + 1)]['target_mean']
+        #                   for i in range(history_size)]
+
+        if history_size < self.buffer_context_size:
+            last_mean, last_var = context_values[-2:] if context_values else (0.0, 0.0)
+            context_values.extend([last_mean, last_var] * (self.buffer_context_size - history_size))
+        # Mean-only baseline:
+        # if len(context_values) < self.buffer_context_size:
+        #     last_val = context_values[-1] if context_values else 0.0
+        #     context_values.extend([last_val] * (self.buffer_context_size - len(context_values)))
+
         context_tensor = torch.tensor(context_values, dtype=torch.float32, device='cuda')
         return context_tensor.unsqueeze(0).expand(batch_size, -1) 
     
