@@ -267,6 +267,9 @@ class SimpleAdapter(nn.Module):
         batch_info = {
             'time_idx': self.current_time_idx,
             'target_mean': targets.mean().item(),
+            'target_std': targets.std().item(),
+            'target_median': targets.median().item(),
+            'target_var': targets.var().item(),
         }
         self.sample_history.append(batch_info)
         
