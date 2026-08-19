@@ -182,7 +182,7 @@ log
 checkpoints
 freeze
 reports
-analysis
+analysis/*.csv
 .DS_Store
 
 # Data
