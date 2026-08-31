@@ -1,4 +1,5 @@
 from copy import deepcopy
+import hashlib
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,7 +12,7 @@ from models.optimizer import get_optimizer
 from models.forecast import forecast
 from datasets.loader import get_test_dataloader
 from utils.misc import prepare_inputs
-from config import get_norm_method
+from config import get_config_fingerprint, get_norm_method
 import time
 
 class SimpleOutputAdapter(nn.Module):
@@ -114,6 +115,7 @@ class SimpleAdapter(nn.Module):
     def __init__(self, cfg, model: nn.Module, norm_module=None):
         super(SimpleAdapter, self).__init__()
         self.cfg = cfg
+        self.config_fingerprint = get_config_fingerprint(cfg)
         self.model_cfg = cfg.MODEL
         self.model = model
         self.norm_method = get_norm_method(cfg)
@@ -125,6 +127,7 @@ class SimpleAdapter(nn.Module):
         self.adapt_steps = getattr(cfg.TTA.COSA, 'STEPS', 20)
         
         self.paas_enabled = getattr(cfg.TTA.COSA, 'PAAS', False)
+        self.method_name = "COSA-P" if self.paas_enabled else "COSA-F"
         self.period_n = getattr(cfg.TTA.COSA, 'PERIOD_N', 1)
         
         self.fast_adaptation = getattr(cfg.TTA.COSA, 'FAST_ADAPTATION', False)
@@ -383,12 +386,13 @@ class SimpleAdapter(nn.Module):
         
         model_name = self.cfg.MODEL.NAME
         dataset_name = self.cfg.DATA.NAME
+        seq_len = self.cfg.DATA.SEQ_LEN
         pred_len = self.cfg.DATA.PRED_LEN
         
-        csv_dir = os.path.join(self.cfg.RESULT_DIR, "csv_predictions", "COSA")
+        csv_dir = os.path.join(self.cfg.RESULT_DIR, "csv_predictions", self.method_name)
         os.makedirs(csv_dir, exist_ok=True)
         
-        csv_filename = f"{model_name}_{dataset_name}_pred{pred_len}_predictions.csv"
+        csv_filename = f"{model_name}_{dataset_name}_sl{seq_len}_pl{pred_len}_predictions.csv"
         csv_path = os.path.join(csv_dir, csv_filename)
         
         df.to_csv(csv_path, index=False)
@@ -415,12 +419,13 @@ class SimpleAdapter(nn.Module):
         
         model_name = self.cfg.MODEL.NAME
         dataset_name = self.cfg.DATA.NAME
+        seq_len = self.cfg.DATA.SEQ_LEN
         pred_len = self.cfg.DATA.PRED_LEN
         
-        csv_dir = os.path.join(self.cfg.RESULT_DIR, "csv_predictions", "COSA")
+        csv_dir = os.path.join(self.cfg.RESULT_DIR, "csv_predictions", self.method_name)
         os.makedirs(csv_dir, exist_ok=True)
         
-        csv_filename = f"{model_name}_{dataset_name}_pred{pred_len}_paas_batch_sizes.csv"
+        csv_filename = f"{model_name}_{dataset_name}_sl{seq_len}_pl{pred_len}_paas_batch_sizes.csv"
         csv_path = os.path.join(csv_dir, csv_filename)
         
         df.to_csv(csv_path, index=False)
@@ -650,18 +655,53 @@ class SimpleAdapter(nn.Module):
             "throughput_samples_per_sec": round(len(self.test_loader.dataset) / self.time_stats['total_time'], 1)
         }
         
+        checkpoint_path = os.path.normpath(
+            os.path.join(self.cfg.TRAIN.CHECKPOINT_DIR, "checkpoint_best.pth")
+        )
+        checkpoint_digest = hashlib.sha256()
+        with open(checkpoint_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                checkpoint_digest.update(chunk)
+
         combined_results = {
-            "model": "SimpleAdapter",
+            "schema_version": 1,
+            "status": "evaluated",
+            "method": self.method_name,
+            "model": self.cfg.MODEL.NAME,
+            "dataset": self.cfg.DATA.NAME,
+            "seq_len": self.cfg.DATA.SEQ_LEN,
+            "pred_len": self.cfg.DATA.PRED_LEN,
+            "seed": self.cfg.SEED,
+            "config_fingerprint": self.config_fingerprint,
+            "checkpoint": checkpoint_path,
+            "checkpoint_sha256": checkpoint_digest.hexdigest(),
+            "test_samples": int(len(self.mse_all)),
             "time_statistics": time_statistics,
             "final_results": {
                 "adaptation_count": int(self.n_adapt),
-                "test_mse": float(self.mse_all.mean())
+                "test_mse": float(self.mse_all.mean()),
+                "test_mae": float(self.mae_all.mean()),
+                "test_mse_std": float(np.std(self.mse_all)),
+                "test_mse_min": float(np.min(self.mse_all)),
+                "test_mse_max": float(np.max(self.mse_all)),
+                "test_mae_std": float(np.std(self.mae_all)),
+                "test_mae_min": float(np.min(self.mae_all)),
+                "test_mae_max": float(np.max(self.mae_all))
             },
             "parameters": {
                 "total_params": total_params
             }
         }
-        
+
+        metrics_path = os.path.join(self.cfg.RESULT_DIR, "metrics.json")
+        tmp_path = f"{metrics_path}.tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(combined_results, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, metrics_path)
+
         print(json.dumps(combined_results, indent=2))
     def adapt(self):
         self.adapt_simple()

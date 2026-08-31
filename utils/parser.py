@@ -27,6 +27,11 @@ def parse_args():
         type=str,
     )
     parser.add_argument(
+        "--print-config-fingerprint",
+        action="store_true",
+        help="Print the resolved configuration fingerprint and exit",
+    )
+    parser.add_argument(
         "opts",
         help="See config.py for all options",
         default=None,

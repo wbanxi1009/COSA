@@ -19,21 +19,22 @@ else
 fi
 PRED_LENS=(96 192 336 720)
 
+METHOD="${TTA_METHOD:?TTA_METHOD must be TAFAS or PETSA}"
 SEED="${SEED:-0}"
 FORCE="${FORCE:-0}"
-BUFFER_CONTEXT_SIZE="${BUFFER_CONTEXT_SIZE:-10}"
-STEPS="${STEPS:-3}"
-BATCH_SIZE="${BATCH_SIZE:-48}"
 PAAS="${PAAS:-True}"
-COSA_VARIANT=""
 PERIOD_N="${PERIOD_N:-1}"
-FAST_ADAPTATION="${FAST_ADAPTATION:-True}"
-ADAPTIVE_LR="${ADAPTIVE_LR:-True}"
-PER_BATCH_LR_RESET="${PER_BATCH_LR_RESET:-True}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+STEPS="${STEPS:-1}"
+ADJUST_PRED="${ADJUST_PRED:-True}"
+GATING_INIT="${GATING_INIT:-0.01}"
+HIDDEN_DIM="${HIDDEN_DIM:-128}"
+GCM_VAR_WISE="${GCM_VAR_WISE:-True}"
+MODULE_NAMES_TO_ADAPT="${MODULE_NAMES_TO_ADAPT:-cali}"
 BASE_LR="${BASE_LR:-0.001}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0001}"
-MAX_LR="${MAX_LR:-0.005}"
-MIN_LR="${MIN_LR:-0.0001}"
+RANK="${RANK:-16}"
+LOSS_ALPHA="${LOSS_ALPHA:-0.1}"
 
 COMPLETED=0
 SKIPPED=0
@@ -43,27 +44,30 @@ MODEL=""
 DATASET=""
 SEQ_LEN=""
 PRED_LEN=""
+CHECKPOINT_DIR=""
 CHECKPOINT_PATH=""
 RESULT_DIR=""
 METRICS_PATH=""
 STATUS_FILE=""
 LOG_FILE=""
 SUMMARY_FILE=""
+RAW_OUTPUT=""
 EXPECTED_CONFIG_FINGERPRINT=""
 EXPECTED_CHECKPOINT_SHA256=""
 RUN_OPTS=()
 
 validate_settings() {
-  python - "${SEED}" "${FORCE}" "${BUFFER_CONTEXT_SIZE}" "${STEPS}" "${BATCH_SIZE}" \
-    "${PAAS}" "${PERIOD_N}" "${FAST_ADAPTATION}" "${ADAPTIVE_LR}" \
-    "${PER_BATCH_LR_RESET}" "${BASE_LR}" "${WEIGHT_DECAY}" "${MAX_LR}" "${MIN_LR}" <<'PY'
+  python - "${METHOD}" "${SEED}" "${FORCE}" "${PERIOD_N}" "${BATCH_SIZE}" "${STEPS}" \
+    "${PAAS}" "${ADJUST_PRED}" "${GCM_VAR_WISE}" "${GATING_INIT}" \
+    "${HIDDEN_DIM}" "${BASE_LR}" "${WEIGHT_DECAY}" "${MODULE_NAMES_TO_ADAPT}" \
+    "${RANK}" "${LOSS_ALPHA}" <<'PY'
 import math
 import sys
 
 (
-    seed, force, context_size, steps, batch_size, paas, period_n,
-    fast_adaptation, adaptive_lr, per_batch_lr_reset, base_lr,
-    weight_decay, max_lr, min_lr,
+    method, seed, force, period_n, batch_size, steps, paas, adjust_pred,
+    gcm_var_wise, gating_init, hidden_dim, base_lr, weight_decay,
+    module_names, rank, loss_alpha,
 ) = sys.argv[1:]
 
 def integer(name, value, minimum):
@@ -73,7 +77,6 @@ def integer(name, value, minimum):
         raise SystemExit(f"{name} must be an integer: {value!r}") from error
     if parsed < minimum:
         raise SystemExit(f"{name} must be >= {minimum}: {parsed}")
-    return parsed
 
 def number(name, value, minimum=0.0):
     try:
@@ -82,30 +85,31 @@ def number(name, value, minimum=0.0):
         raise SystemExit(f"{name} must be numeric: {value!r}") from error
     if not math.isfinite(parsed) or parsed < minimum:
         raise SystemExit(f"{name} must be finite and >= {minimum}: {value!r}")
-    return parsed
 
 integer("SEED", seed, 0)
-integer("BUFFER_CONTEXT_SIZE", context_size, 1)
-integer("STEPS", steps, 1)
-integer("BATCH_SIZE", batch_size, 1)
 integer("PERIOD_N", period_n, 1)
+integer("BATCH_SIZE", batch_size, 1)
+integer("STEPS", steps, 1)
+integer("HIDDEN_DIM", hidden_dim, 1)
+if method not in {"TAFAS", "PETSA"}:
+    raise SystemExit("TTA_METHOD must be TAFAS or PETSA")
 if force not in {"0", "1"}:
     raise SystemExit("FORCE must be 0 or 1")
 for name, value in {
     "PAAS": paas,
-    "FAST_ADAPTATION": fast_adaptation,
-    "ADAPTIVE_LR": adaptive_lr,
-    "PER_BATCH_LR_RESET": per_batch_lr_reset,
+    "ADJUST_PRED": adjust_pred,
+    "GCM_VAR_WISE": gcm_var_wise,
 }.items():
     if value not in {"True", "False"}:
         raise SystemExit(f"{name} must be True or False")
-
-base = number("BASE_LR", base_lr)
+number("GATING_INIT", gating_init)
+number("BASE_LR", base_lr)
 number("WEIGHT_DECAY", weight_decay)
-maximum = number("MAX_LR", max_lr)
-minimum = number("MIN_LR", min_lr)
-if adaptive_lr == "True" and not minimum <= base <= maximum:
-    raise SystemExit("adaptive learning rates must satisfy MIN_LR <= BASE_LR <= MAX_LR")
+if not module_names.strip():
+    raise SystemExit("MODULE_NAMES_TO_ADAPT must not be empty")
+if method == "PETSA":
+    integer("RANK", rank, 1)
+    number("LOSS_ALPHA", loss_alpha)
 PY
 }
 
@@ -113,17 +117,18 @@ write_status() {
   local status="$1"
   local exit_code="${2:-}"
 
-  python - "${STATUS_FILE}" "${status}" "${COSA_VARIANT}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" \
-    "${SEED}" "${LOG_FILE}" "${exit_code}" "${EXPECTED_CONFIG_FINGERPRINT}" \
-    "${CHECKPOINT_PATH}" "${EXPECTED_CHECKPOINT_SHA256}" <<'PY'
+  python - "${STATUS_FILE}" "${status}" "${METHOD}" "${MODEL}" "${DATASET}" \
+    "${SEQ_LEN}" "${PRED_LEN}" "${SEED}" "${LOG_FILE}" "${exit_code}" \
+    "${EXPECTED_CONFIG_FINGERPRINT}" "${CHECKPOINT_PATH}" \
+    "${EXPECTED_CHECKPOINT_SHA256}" <<'PY'
 import json
 import os
 import sys
 from datetime import datetime, timezone
 
 (
-    path, status, method, model, dataset, seq_len, pred_len, seed, log_path, exit_code,
-    config_fingerprint, checkpoint_path, checkpoint_sha256,
+    path, status, method, model, dataset, seq_len, pred_len, seed, log_path,
+    exit_code, config_fingerprint, checkpoint_path, checkpoint_sha256,
 ) = sys.argv[1:]
 now = datetime.now(timezone.utc).isoformat()
 
@@ -170,7 +175,7 @@ PY
 
 status_is_complete() {
   python - "${STATUS_FILE}" "${EXPECTED_CONFIG_FINGERPRINT}" \
-    "${EXPECTED_CHECKPOINT_SHA256}" "${COSA_VARIANT}" "${SEQ_LEN}" <<'PY'
+    "${EXPECTED_CHECKPOINT_SHA256}" "${METHOD}" "${SEQ_LEN}" <<'PY'
 import json
 import sys
 
@@ -266,27 +271,68 @@ PY
 }
 
 finalize_metrics() {
-  python - "${METRICS_PATH}" "${STATUS_FILE}" <<'PY'
+  python - "${RAW_OUTPUT}" "${METRICS_PATH}" "${STATUS_FILE}" "${METHOD}" \
+    "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${SEED}" \
+    "${EXPECTED_CONFIG_FINGERPRINT}" "${CHECKPOINT_PATH}" \
+    "${EXPECTED_CHECKPOINT_SHA256}" <<'PY'
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
 
-metrics_path, status_path = sys.argv[1:]
-with open(metrics_path) as f:
-    metrics = json.load(f)
-with open(status_path) as f:
-    run_status = json.load(f)
-if metrics.get("status") != "evaluated":
-    raise RuntimeError("COSA metrics are not in the evaluated state")
-started_at = run_status.get("started_at")
-if run_status.get("status") != "running" or not started_at:
-    raise RuntimeError("run status does not contain a valid start time")
+(
+    output_path, metrics_path, status_path, method, model, dataset,
+    seq_len, pred_len, seed, config_fingerprint, checkpoint_path, checkpoint_sha256,
+) = sys.argv[1:]
 
+with open(output_path) as f:
+    output = f.read()
+decoder = json.JSONDecoder()
+adapter_result = None
+for index, character in enumerate(output):
+    if character != "{":
+        continue
+    try:
+        value, _ = decoder.raw_decode(output[index:])
+    except json.JSONDecodeError:
+        continue
+    if isinstance(value, dict) and value.get("model") == method and "final_results" in value:
+        adapter_result = value
+if adapter_result is None:
+    raise RuntimeError(f"{method} output did not contain its final JSON result")
+
+results = adapter_result.get("final_results", {})
+mse = results.get("test_mse")
+adaptations = results.get("adaptation_count")
+params = adapter_result.get("parameters", {}).get("total_params")
+if type(mse) not in (int, float) or not math.isfinite(mse) or mse < 0:
+    raise RuntimeError(f"invalid test MSE: {mse!r}")
+if type(adaptations) is not int or adaptations < 0:
+    raise RuntimeError(f"invalid adaptation count: {adaptations!r}")
+if type(params) is not int or params < 0:
+    raise RuntimeError(f"invalid trainable parameter count: {params!r}")
+
+with open(status_path) as f:
+    status = json.load(f)
+started_at = status.get("started_at")
+if status.get("status") != "running" or not started_at:
+    raise RuntimeError("run status does not contain a valid start time")
 started = datetime.fromisoformat(started_at)
 completed = datetime.now(timezone.utc)
-metrics.update({
+
+adapter_result.update({
+    "schema_version": 1,
     "status": "complete",
+    "method": method,
+    "model": model,
+    "dataset": dataset,
+    "seq_len": int(seq_len),
+    "pred_len": int(pred_len),
+    "seed": int(seed),
+    "config_fingerprint": config_fingerprint,
+    "checkpoint": os.path.normpath(checkpoint_path),
+    "checkpoint_sha256": checkpoint_sha256,
     "started_at": started_at,
     "completed_at": completed.isoformat(),
     "duration_seconds": (completed - started).total_seconds(),
@@ -294,7 +340,7 @@ metrics.update({
 
 tmp_path = f"{metrics_path}.tmp"
 with open(tmp_path, "w") as f:
-    json.dump(metrics, f, indent=2, sort_keys=True)
+    json.dump(adapter_result, f, indent=2, sort_keys=True)
     f.write("\n")
     f.flush()
     os.fsync(f.fileno())
@@ -303,9 +349,10 @@ PY
 }
 
 validate_run() {
-  python - "${METRICS_PATH}" "${RESULT_DIR}/config.yaml" "${EXPECTED_CONFIG_FINGERPRINT}" \
-    "${CHECKPOINT_PATH}" "${EXPECTED_CHECKPOINT_SHA256}" "${MODEL}" "${DATASET}" \
-    "${SEQ_LEN}" "${PRED_LEN}" "${SEED}" "${COSA_VARIANT}" <<'PY'
+  python - "${METRICS_PATH}" "${RESULT_DIR}/config.yaml" \
+    "${EXPECTED_CONFIG_FINGERPRINT}" "${CHECKPOINT_PATH}" \
+    "${EXPECTED_CHECKPOINT_SHA256}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" \
+    "${SEED}" "${METHOD}" <<'PY'
 import hashlib
 import json
 import math
@@ -319,7 +366,6 @@ import sys
 for path in (metrics_path, config_path, checkpoint_path):
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
         raise RuntimeError(f"missing or empty artifact: {path}")
-
 with open(config_path, "rb") as f:
     if hashlib.sha256(f.read()).hexdigest() != config_fingerprint:
         raise RuntimeError("config.yaml fingerprint does not match the requested configuration")
@@ -342,28 +388,24 @@ expected = {
 for key, value in expected.items():
     if metrics.get(key) != value:
         raise RuntimeError(f"metrics identity mismatch for {key}: {metrics.get(key)!r} != {value!r}")
-
 if not metrics.get("started_at") or not metrics.get("completed_at"):
     raise RuntimeError("metrics do not contain run timestamps")
-if not math.isfinite(metrics.get("duration_seconds", math.nan)) or metrics["duration_seconds"] < 0:
-    raise RuntimeError("metrics contain an invalid duration")
-if type(metrics.get("test_samples")) is not int or metrics["test_samples"] <= 0:
-    raise RuntimeError("metrics contain an invalid test sample count")
-
+duration = metrics.get("duration_seconds")
+if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
+    raise RuntimeError(f"invalid duration: {duration!r}")
 results = metrics.get("final_results", {})
-for key in (
-    "test_mse", "test_mae", "test_mse_std", "test_mse_min", "test_mse_max",
-    "test_mae_std", "test_mae_min", "test_mae_max",
-):
+for key in ("test_mse",):
     value = results.get(key)
     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
-        raise RuntimeError(f"invalid COSA metric {key}: {value!r}")
-adaptation_count = results.get("adaptation_count")
-if type(adaptation_count) is not int or adaptation_count < 0:
-    raise RuntimeError(f"invalid adaptation count: {adaptation_count!r}")
-
+        raise RuntimeError(f"invalid metric {key}: {value!r}")
+adaptations = results.get("adaptation_count")
+if type(adaptations) is not int or adaptations < 0:
+    raise RuntimeError(f"invalid adaptation count: {adaptations!r}")
+params = metrics.get("parameters", {}).get("total_params")
+if type(params) is not int or params < 0:
+    raise RuntimeError(f"invalid trainable parameter count: {params!r}")
 overall = metrics.get("time_statistics", {}).get("overall_stats", {})
-for key in ("total_time_seconds", "avg_time_per_adaptation_ms", "throughput_samples_per_sec"):
+for key in ("total_time_seconds", "throughput_samples_per_sec"):
     value = overall.get(key)
     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
         raise RuntimeError(f"invalid timing metric {key}: {value!r}")
@@ -376,22 +418,20 @@ import json
 import os
 import sys
 
-metrics_path, summary_path = sys.argv[1:]
-with open(metrics_path) as f:
+with open(sys.argv[1]) as f:
     metrics = json.load(f)
 results = metrics["final_results"]
 summary = (
     f"test_mse={results['test_mse']:.8f} "
-    f"test_mae={results['test_mae']:.8f} "
     f"adaptations={results['adaptation_count']} "
     f"duration_seconds={metrics['duration_seconds']:.3f}\n"
 )
-tmp_path = f"{summary_path}.tmp"
+tmp_path = f"{sys.argv[2]}.tmp"
 with open(tmp_path, "w") as f:
     f.write(summary)
     f.flush()
     os.fsync(f.fileno())
-os.replace(tmp_path, summary_path)
+os.replace(tmp_path, sys.argv[2])
 print(summary, end="")
 PY
 }
@@ -417,12 +457,7 @@ trap 'handle_interrupt 143' TERM
 trap handle_exit EXIT
 
 validate_settings
-
-if [[ "${PAAS}" == "True" ]]; then
-  COSA_VARIANT="COSA-P"
-else
-  COSA_VARIANT="COSA-F"
-fi
+python -c 'import torch, yacs' >/dev/null
 
 TOTAL=$((${#MODELS[@]} * ${#DATASETS[@]} * ${#INPUT_LENS[@]} * ${#PRED_LENS[@]}))
 RUN_NUMBER=0
@@ -435,14 +470,15 @@ for MODEL in "${MODELS[@]}"; do
       RUN_KEY="${DATASET}_sl${SEQ_LEN}_pl${PRED_LEN}"
       CHECKPOINT_DIR="./checkpoints/${MODEL}/${RUN_KEY}/seed_${SEED}/"
       CHECKPOINT_PATH="${CHECKPOINT_DIR}checkpoint_best.pth"
-      RESULT_ROOT="./results/SIMPLE/${COSA_VARIANT}/"
-      RESULT_DIR="./results/SIMPLE/${COSA_VARIANT}/${MODEL}/${RUN_KEY}/seed_${SEED}"
+      RESULT_ROOT="./results/${METHOD}/"
+      RESULT_DIR="./results/${METHOD}/${MODEL}/${RUN_KEY}/seed_${SEED}"
       METRICS_PATH="${RESULT_DIR}/metrics.json"
       STATUS_FILE="${RESULT_DIR}/run_status.json"
-      LOG_DIR="./logs/cosa/${COSA_VARIANT}/${MODEL}"
+      LOG_DIR="./logs/${METHOD,,}/${MODEL}"
       LOG_FILE="${LOG_DIR}/${RUN_KEY}_seed_${SEED}.log"
-      SUMMARY_DIR="./results/summary/SIMPLE/${COSA_VARIANT}/${MODEL}/${RUN_KEY}"
+      SUMMARY_DIR="./results/summary/${METHOD}/${MODEL}/${RUN_KEY}"
       SUMMARY_FILE="${SUMMARY_DIR}/seed_${SEED}.txt"
+      RAW_OUTPUT="${RESULT_DIR}/adapter_output.tmp"
 
       mkdir -p "${RESULT_DIR}" "${LOG_DIR}" "${SUMMARY_DIR}"
 
@@ -458,20 +494,39 @@ for MODEL in "${MODELS[@]}"; do
         TEST.ENABLE False
         TRAIN.CHECKPOINT_DIR "${CHECKPOINT_DIR}"
         TTA.ENABLE True
+        TTA.MODULE_NAMES_TO_ADAPT "${MODULE_NAMES_TO_ADAPT}"
         TTA.SOLVER.BASE_LR "${BASE_LR}"
         TTA.SOLVER.WEIGHT_DECAY "${WEIGHT_DECAY}"
-        TTA.COSA.BATCH_SIZE "${BATCH_SIZE}"
-        TTA.COSA.STEPS "${STEPS}"
-        TTA.COSA.BUFFER_CONTEXT_SIZE "${BUFFER_CONTEXT_SIZE}"
-        TTA.COSA.FAST_ADAPTATION "${FAST_ADAPTATION}"
-        TTA.COSA.PER_BATCH_LR_RESET "${PER_BATCH_LR_RESET}"
-        TTA.COSA.ADAPTIVE_LR "${ADAPTIVE_LR}"
-        TTA.COSA.MAX_LR "${MAX_LR}"
-        TTA.COSA.MIN_LR "${MIN_LR}"
-        TTA.COSA.PAAS "${PAAS}"
-        TTA.COSA.PERIOD_N "${PERIOD_N}"
-        RESULT_DIR "${RESULT_ROOT}"
       )
+
+      if [[ "${METHOD}" == "TAFAS" ]]; then
+        RUN_OPTS+=(
+          TTA.TAFAS.PAAS "${PAAS}"
+          TTA.TAFAS.PERIOD_N "${PERIOD_N}"
+          TTA.TAFAS.BATCH_SIZE "${BATCH_SIZE}"
+          TTA.TAFAS.STEPS "${STEPS}"
+          TTA.TAFAS.ADJUST_PRED "${ADJUST_PRED}"
+          TTA.TAFAS.CALI_MODULE True
+          TTA.TAFAS.GATING_INIT "${GATING_INIT}"
+          TTA.TAFAS.HIDDEN_DIM "${HIDDEN_DIM}"
+          TTA.TAFAS.GCM_VAR_WISE "${GCM_VAR_WISE}"
+        )
+      else
+        RUN_OPTS+=(
+          TTA.PETSA.PAAS "${PAAS}"
+          TTA.PETSA.PERIOD_N "${PERIOD_N}"
+          TTA.PETSA.BATCH_SIZE "${BATCH_SIZE}"
+          TTA.PETSA.STEPS "${STEPS}"
+          TTA.PETSA.ADJUST_PRED "${ADJUST_PRED}"
+          TTA.PETSA.CALI_MODULE True
+          TTA.PETSA.GATING_INIT "${GATING_INIT}"
+          TTA.PETSA.HIDDEN_DIM "${HIDDEN_DIM}"
+          TTA.PETSA.GCM_VAR_WISE "${GCM_VAR_WISE}"
+          TTA.PETSA.RANK "${RANK}"
+          TTA.PETSA.LOSS_ALPHA "${LOSS_ALPHA}"
+        )
+      fi
+      RUN_OPTS+=(RESULT_DIR "${RESULT_ROOT}")
 
       EXPECTED_CONFIG_FINGERPRINT=""
       EXPECTED_CHECKPOINT_SHA256=""
@@ -480,74 +535,71 @@ for MODEL in "${MODELS[@]}"; do
         write_status "failed" "1"
         CURRENT_ACTIVE=0
         FAILED=$((FAILED + 1))
-        printf '[%d/%d] FAIL model=%s dataset=%s seq_len=%s pred_len=%s (could not resolve COSA configuration; log=%s)\n' \
-          "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
+        printf '[%d/%d] FAIL method=%s model=%s dataset=%s seq_len=%s pred_len=%s (configuration; log=%s)\n' \
+          "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
         continue
       fi
-
       if ! TRAINING_CONFIG_FINGERPRINT="$(resolve_training_fingerprint 2>>"${LOG_FILE}")"; then
         CURRENT_ACTIVE=1
         write_status "failed" "1"
         CURRENT_ACTIVE=0
         FAILED=$((FAILED + 1))
-        printf '[%d/%d] FAIL model=%s dataset=%s seq_len=%s pred_len=%s (could not resolve training configuration; log=%s)\n' \
-          "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
+        printf '[%d/%d] FAIL method=%s model=%s dataset=%s seq_len=%s pred_len=%s (training configuration; log=%s)\n' \
+          "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
         continue
       fi
-
       if ! EXPECTED_CHECKPOINT_SHA256="$(validate_checkpoint "${TRAINING_CONFIG_FINGERPRINT}" 2>>"${LOG_FILE}")"; then
         CURRENT_ACTIVE=1
         write_status "failed" "1"
         CURRENT_ACTIVE=0
         FAILED=$((FAILED + 1))
-        printf '[%d/%d] FAIL model=%s dataset=%s seq_len=%s pred_len=%s (checkpoint validation failed; log=%s)\n' \
-          "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
+        printf '[%d/%d] FAIL method=%s model=%s dataset=%s seq_len=%s pred_len=%s (checkpoint; log=%s)\n' \
+          "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
         continue
       fi
 
       if [[ "${FORCE}" != "1" ]] && status_is_complete && validate_run; then
-        if result_summary="$(write_summary 2>>"${LOG_FILE}")"; then
-          printf '[%d/%d] SKIP model=%s dataset=%s seq_len=%s pred_len=%s %s (validated complete)\n' \
-            "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${result_summary}"
-          SKIPPED=$((SKIPPED + 1))
-        else
-          write_status "failed" "1"
-          FAILED=$((FAILED + 1))
-          printf '[%d/%d] FAIL model=%s dataset=%s seq_len=%s pred_len=%s (could not write summary; log=%s)\n' \
-            "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
-        fi
+        result_summary="$(write_summary 2>>"${LOG_FILE}")"
+        printf '[%d/%d] SKIP method=%s model=%s dataset=%s seq_len=%s pred_len=%s %s (validated complete)\n' \
+          "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${result_summary}"
+        SKIPPED=$((SKIPPED + 1))
         continue
       fi
 
-      printf '\n[%d/%d] START model=%s dataset=%s seq_len=%s pred_len=%s seed=%s time=%s\n' \
-        "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${SEED}" "$(date -Is)" | tee -a "${LOG_FILE}"
+      printf '\n[%d/%d] START method=%s model=%s dataset=%s seq_len=%s pred_len=%s seed=%s time=%s\n' \
+        "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" \
+        "${SEED}" "$(date -Is)" | tee -a "${LOG_FILE}"
 
       CURRENT_ACTIVE=1
       write_status "running"
-      rm -f "${METRICS_PATH}" "${METRICS_PATH}.tmp" "${SUMMARY_FILE}" "${SUMMARY_FILE}.tmp"
+      rm -f "${METRICS_PATH}" "${METRICS_PATH}.tmp" "${SUMMARY_FILE}" \
+        "${SUMMARY_FILE}.tmp" "${RAW_OUTPUT}"
 
-      if python main.py "${RUN_OPTS[@]}" 2>&1 | tee -a "${LOG_FILE}"; then
+      if python main.py "${RUN_OPTS[@]}" 2>&1 | tee -a "${LOG_FILE}" | tee "${RAW_OUTPUT}"; then
         if finalize_metrics 2>&1 | tee -a "${LOG_FILE}" && \
           validate_run 2>&1 | tee -a "${LOG_FILE}" && \
           result_summary="$(write_summary 2>>"${LOG_FILE}")"; then
           write_status "complete"
+          rm -f "${RAW_OUTPUT}"
           COMPLETED=$((COMPLETED + 1))
-          printf '[%d/%d] PASS model=%s dataset=%s seq_len=%s pred_len=%s %s\n' \
-            "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${result_summary}" | tee -a "${LOG_FILE}"
+          printf '[%d/%d] PASS method=%s model=%s dataset=%s seq_len=%s pred_len=%s %s\n' \
+            "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" \
+            "${result_summary}" | tee -a "${LOG_FILE}"
         else
           write_status "failed" "1"
           FAILED=$((FAILED + 1))
-          printf '[%d/%d] FAIL model=%s dataset=%s seq_len=%s pred_len=%s (artifact validation failed; log=%s)\n' \
-            "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${LOG_FILE}"
+          printf '[%d/%d] FAIL method=%s model=%s dataset=%s seq_len=%s pred_len=%s (artifact validation; log=%s)\n' \
+            "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" \
+            "${LOG_FILE}"
         fi
       else
         exit_code="$?"
         write_status "failed" "${exit_code}"
         FAILED=$((FAILED + 1))
-        printf '[%d/%d] FAIL model=%s dataset=%s seq_len=%s pred_len=%s exit_code=%s log=%s\n' \
-          "${RUN_NUMBER}" "${TOTAL}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" "${exit_code}" "${LOG_FILE}"
+        printf '[%d/%d] FAIL method=%s model=%s dataset=%s seq_len=%s pred_len=%s exit_code=%s log=%s\n' \
+          "${RUN_NUMBER}" "${TOTAL}" "${METHOD}" "${MODEL}" "${DATASET}" "${SEQ_LEN}" "${PRED_LEN}" \
+          "${exit_code}" "${LOG_FILE}"
       fi
-
       CURRENT_ACTIVE=0
       done
     done
@@ -555,7 +607,7 @@ for MODEL in "${MODELS[@]}"; do
 done
 
 printf '\n%s summary: completed=%d skipped=%d failed=%d total=%d\n' \
-  "${COSA_VARIANT}" "${COMPLETED}" "${SKIPPED}" "${FAILED}" "${TOTAL}"
+  "${METHOD}" "${COMPLETED}" "${SKIPPED}" "${FAILED}" "${TOTAL}"
 
 if ((FAILED > 0)); then
   exit 1

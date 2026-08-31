@@ -16,6 +16,7 @@
 ###########################################################################################
 
 import math
+import hashlib
 from yacs.config import CfgNode as CN
 
 
@@ -247,6 +248,10 @@ _C.SOLVER.WARMUP_START_LR = 0.001
 def get_cfg_defaults():
 
     return _C.clone()
+
+
+def get_config_fingerprint(cfg):
+    return hashlib.sha256(cfg.dump().encode("utf-8")).hexdigest()
 
 
 def get_norm_module_cfg(cfg):

@@ -18,6 +18,7 @@
 import os
 from typing import Dict, Optional
 import pickle
+import json
 
 import numpy as np
 import torch
@@ -27,7 +28,7 @@ from models.forecast import forecast
 from datasets.loader import get_train_dataloader, get_test_dataloader
 from utils.misc import prepare_inputs
 from utils.misc import mkdir
-from config import get_norm_method
+from config import get_config_fingerprint, get_norm_method
 
 
 class Predictor:
@@ -38,8 +39,9 @@ class Predictor:
         self.norm_method = get_norm_method(cfg)
         self.norm_module = norm_module
 
-        cfg.TRAIN.SHUFFLE, cfg.TRAIN.DROP_LAST = False, False
-        self.train_loader = get_train_dataloader(cfg)
+        train_loader_cfg = cfg.clone()
+        train_loader_cfg.TRAIN.SHUFFLE, train_loader_cfg.TRAIN.DROP_LAST = False, False
+        self.train_loader = get_train_dataloader(train_loader_cfg)
         self.test_loader = get_test_dataloader(cfg)
 
         self.mse_all = []
@@ -64,8 +66,13 @@ class Predictor:
         self.save_results(results)
 
         self.errors_all["test_mse_all"] = self.test_errors['mse_all'].astype(float)
+        self.errors_all["test_mae_all"] = self.test_errors['mae_all'].astype(float)
         
         self.save_to_npy(**self.errors_all)
+        self.save_metrics(results)
+
+        results_string = ", ".join([f"{metric}: {value:.8f}" for metric, value in results.items()])
+        print(f"Baseline results | {results_string}")
 
         # log to W&B
         log_dict.update({f"Test/{metric}": value for metric, value in results.items()})
@@ -167,7 +174,12 @@ class Predictor:
         self.mae_all = np.concatenate(self.mae_all)
         assert len(self.mse_all) == len(self.test_loader.dataset)
         
-        return {'mse': self.mse_all.mean(), 'mae': self.mae_all.mean(), 'mse_all': self.mse_all}
+        return {
+            'mse': self.mse_all.mean(),
+            'mae': self.mae_all.mean(),
+            'mse_all': self.mse_all,
+            'mae_all': self.mae_all,
+        }
 
     def get_results(self) -> Dict[str, float]:
         test_mse = self.test_errors['mse'].mean().astype(float)
@@ -183,13 +195,72 @@ class Predictor:
             }
 
     def save_results(self, results):
-        results_string = ", ".join([f"{metric}: {value:.04f}" for metric, value in results.items()])
-        # print("Results without TSF-TTA:")
-        # print(results_string)
-
-        with open(os.path.join(mkdir(self.cfg.RESULT_DIR) / "test.txt"), "w") as f:
+        results_string = ", ".join([f"{metric}: {value:.8f}" for metric, value in results.items()])
+        result_path = os.path.join(mkdir(self.cfg.RESULT_DIR), "test.txt")
+        tmp_path = f"{result_path}.tmp"
+        with open(tmp_path, "w") as f:
             f.write(results_string)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, result_path)
 
     def save_to_npy(self, **kwargs):
         for key, value in kwargs.items():
-            np.save(os.path.join(self.cfg.RESULT_DIR, f"{key}.npy"), value)
+            result_path = os.path.join(self.cfg.RESULT_DIR, f"{key}.npy")
+            tmp_path = f"{result_path}.tmp"
+            with open(tmp_path, "wb") as f:
+                np.save(f, value)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, result_path)
+
+    def save_metrics(self, results):
+        checkpoint_metadata = getattr(self.model, "_checkpoint_metadata", {})
+        selection_metric = checkpoint_metadata.get("selection_metric")
+        if selection_metric is None:
+            selection_metric = self.cfg.MODEL.METRIC_NAMES[0]
+        if selection_metric != "closed_form_fit":
+            selection_metric = f"val_{selection_metric.lower()}"
+
+        validation_metrics = checkpoint_metadata.get("validation_metrics", {})
+        best_metric = checkpoint_metadata.get("best_metric")
+        best_epoch = checkpoint_metadata.get("epoch")
+        checkpoint_path = os.path.normpath(
+            os.path.join(self.cfg.TRAIN.CHECKPOINT_DIR, "checkpoint_best.pth")
+        )
+
+        metrics = {
+            "schema_version": 1,
+            "status": "evaluated",
+            "model": self.cfg.MODEL.NAME,
+            "dataset": self.cfg.DATA.NAME,
+            "seq_len": self.cfg.DATA.SEQ_LEN,
+            "pred_len": self.cfg.DATA.PRED_LEN,
+            "seed": self.cfg.SEED,
+            "data_scale": self.cfg.DATA.SCALE,
+            "normalization": self.norm_method,
+            "config_fingerprint": get_config_fingerprint(self.cfg),
+            "selection_metric": selection_metric,
+            "best_epoch": best_epoch,
+            "best_val_metric": None if best_metric is None else float(best_metric),
+            "best_val_mse": validation_metrics.get("MSE"),
+            "best_val_mae": validation_metrics.get("MAE"),
+            "checkpoint": checkpoint_path,
+            "test_samples": int(len(self.mse_all)),
+            "train_samples": int(len(self.train_errors["mse"])),
+            "test_mse_std": float(np.std(self.mse_all)),
+            "test_mse_min": float(np.min(self.mse_all)),
+            "test_mse_max": float(np.max(self.mse_all)),
+            "test_mae_std": float(np.std(self.mae_all)),
+            "test_mae_min": float(np.min(self.mae_all)),
+            "test_mae_max": float(np.max(self.mae_all)),
+            **results,
+        }
+        result_path = os.path.join(self.cfg.RESULT_DIR, "metrics.json")
+        tmp_path = f"{result_path}.tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(metrics, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, result_path)

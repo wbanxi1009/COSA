@@ -27,7 +27,7 @@ from tta.tafas import build_adapter
 import tta.cosa as cosa
 import tta.petsa as petsa
 import tta.dynatta as dynatta
-from config import get_norm_module_cfg
+from config import get_config_fingerprint, get_norm_module_cfg
 
 
 def main():
@@ -36,17 +36,25 @@ def main():
     update_cfg_from_dataset(cfg, cfg.DATA.NAME)
     
     cfg.RESULT_DIR = os.path.join(cfg.RESULT_DIR, cfg.TRAIN.CHECKPOINT_DIR.split('./checkpoints/')[-1])
+
+    if args.print_config_fingerprint:
+        print(get_config_fingerprint(cfg))
+        return
     
-    if not os.path.exists(cfg.RESULT_DIR):
-        os.makedirs(cfg.RESULT_DIR)
+    os.makedirs(cfg.RESULT_DIR, exist_ok=True)
 
 
     # select cuda devices
     set_devices(cfg.VISIBLE_DEVICES)
 
 
-    with open(os.path.join(cfg.RESULT_DIR, 'config.yaml'), 'w') as f:
+    config_path = os.path.join(cfg.RESULT_DIR, 'config.yaml')
+    config_tmp_path = f"{config_path}.tmp"
+    with open(config_tmp_path, 'w') as f:
         f.write(cfg.dump())
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(config_tmp_path, config_path)
     
     # set random seed
     set_seeds(cfg.SEED)

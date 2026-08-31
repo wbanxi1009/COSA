@@ -90,8 +90,12 @@ bash scripts/train.sh
 ### Running COSA (Test-Time Adaptation)
 
 ```bash
-bash scripts/cosa.sh
+PAAS=True bash scripts/cosa.sh   # COSA-P
+PAAS=False bash scripts/cosa.sh  # COSA-F
 ```
+
+COSA-P and COSA-F run separately and store their artifacts under
+`results/SIMPLE/COSA-P/` and `results/SIMPLE/COSA-F/`, respectively.
 
 
 ### Running Specific Experiments

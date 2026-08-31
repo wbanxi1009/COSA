@@ -9,6 +9,7 @@ export CUDA_VISIBLE_DEVICES=0
 MODELS=("DLinear" "FreTS" "iTransformer" "MICN" "OLS" "PatchTST")
 DATASETS=("ETTh1" "ETTh2" "ETTm1" "ETTm2" "exchange_rate" "weather")
 PRED_LENS=(96 192 336 720)
+SEED="${SEED:-0}"
 
 # DynaTTA Configuration
 MSE_BUFFER_SIZE=256
@@ -34,9 +35,9 @@ WEIGHT_DECAY=0.0001
 for MODEL in "${MODELS[@]}"; do
   for DATASET in "${DATASETS[@]}"; do
     for PRED_LEN in "${PRED_LENS[@]}"; do
-      CHECKPOINT_DIR="./checkpoints/${MODEL}/${DATASET}_${PRED_LEN}/"
+      CHECKPOINT_DIR="./checkpoints/${MODEL}/${DATASET}_${PRED_LEN}/seed_${SEED}/"
       RESULT_DIR="./results/DYNATTA/"
-      OUTPUT="./results/summary/DYNATTA/${MODEL}/${DATASET}/${PRED_LEN}.txt"
+      OUTPUT="./results/summary/DYNATTA/${MODEL}/${DATASET}/${PRED_LEN}_seed_${SEED}.txt"
 
       echo "DynaTTA: MODEL=${MODEL}, DATASET=${DATASET}, PRED_LEN=${PRED_LEN}"
       echo "   Buffer: MSE=${MSE_BUFFER_SIZE}, RTAB=${RTAB_SIZE}, RDB=${RDB_SIZE}"
@@ -44,6 +45,7 @@ for MODEL in "${MODELS[@]}"; do
       echo "   Updates: Buffer=${UPDATE_BUFFERS_INTERVAL}, Metrics=${UPDATE_METRICS_INTERVAL}"
 
       python main.py \
+        SEED ${SEED} \
         DATA.NAME ${DATASET} \
         DATA.PRED_LEN ${PRED_LEN} \
         MODEL.NAME ${MODEL} \

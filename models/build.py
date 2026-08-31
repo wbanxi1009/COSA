@@ -69,6 +69,13 @@ def load_best_model(cfg, model):
         msg = model.load_state_dict(state_dict, strict=True)
         assert set(msg.missing_keys) == set()
 
+        model._checkpoint_metadata = {
+            "epoch": checkpoint.get("epoch"),
+            "selection_metric": checkpoint.get("selection_metric"),
+            "best_metric": checkpoint.get("best_metric"),
+            "validation_metrics": checkpoint.get("validation_metrics", {}),
+        }
+
         # print(f"Loaded pre-trained model from {model_path}")
     # else:
         # print("=> no checkpoint found at '{}'".format(model_path))

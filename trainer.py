@@ -87,8 +87,10 @@ class Trainer:
                     tracking_meter = self.eval_epoch_station()
                     is_best = self._check_improvement(tracking_meter.avg, best_metric)
                     if is_best:
-                        with open(mkdir(self.cfg.SAN.RESULT_DIR) / "best_result.txt", 'w') as f:
-                            f.write(f"Val/{tracking_meter.name}: {tracking_meter.avg}\tEpoch: {self.cur_epoch_station}")
+                        self._atomic_write_text(
+                            mkdir(self.cfg.SAN.RESULT_DIR) / "best_result.txt",
+                            f"Val/{tracking_meter.name}: {tracking_meter.avg}\tEpoch: {self.cur_epoch_station}"
+                        )
                         self.save_best_norm_module()
                         best_metric = tracking_meter.avg
                 self.cur_epoch_station += 1
@@ -101,14 +103,19 @@ class Trainer:
 
             # Evaluate the model on validation set.
             if self._is_eval_epoch(cur_epoch):
-                tracking_meter = self.eval_epoch()
+                tracking_meter, validation_metrics = self.eval_epoch()
                 # check improvement
                 is_best = self._check_improvement(tracking_meter.avg, best_metric)
                 # Save a checkpoint on improvement.
                 if is_best:
-                    with open(mkdir(self.cfg.RESULT_DIR) / "best_result.txt", 'w') as f:
-                        f.write(f"Val/{tracking_meter.name}: {tracking_meter.avg}\tEpoch: {self.cur_epoch}")
-                    self.save_best_model()
+                    self._atomic_write_text(
+                        mkdir(self.cfg.RESULT_DIR) / "best_result.txt",
+                        f"Val/{tracking_meter.name}: {tracking_meter.avg}\tEpoch: {self.cur_epoch}"
+                    )
+                    self.save_best_model(
+                        best_metric=tracking_meter.avg,
+                        validation_metrics=validation_metrics
+                    )
                     if self.norm_method in ('RevIN', 'DishTS'):
                         self.save_best_norm_module()
                     best_metric = tracking_meter.avg
@@ -385,7 +392,12 @@ class Trainer:
         # track the best model based on the first metric
         tracking_meter = metric_meters[0]
 
-        return tracking_meter
+        validation_metrics = {
+            **{name: float(meter.avg) for name, meter in zip(self.metric_names, metric_meters)},
+            **{name: float(meter.avg) for name, meter in zip(self.loss_names, loss_meters)},
+        }
+
+        return tracking_meter, validation_metrics
 
     @torch.no_grad()
     def eval_epoch_station(self):
@@ -474,15 +486,39 @@ class Trainer:
     def _is_display_iter(self, cur_iter):
         return (cur_iter + 1) % self.cfg.TRAIN.PRINT_FREQ == 0 or (cur_iter + 1) == len(self.val_loader)
 
-    def save_best_model(self):
+    @staticmethod
+    def _atomic_write_text(path, contents):
+        path = os.fspath(path)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w") as f:
+            f.write(contents)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+
+    @staticmethod
+    def _atomic_torch_save(value, path):
+        path = os.fspath(path)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "wb") as f:
+            torch.save(value, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+
+    def save_best_model(self, best_metric=None, validation_metrics=None):
+        is_closed_form = self.cfg.MODEL.NAME == 'OLS'
         checkpoint = {
-            "epoch": self.cur_epoch,
+            "epoch": None if is_closed_form else self.cur_epoch,
             "model_state": self.model.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
+            "selection_metric": "closed_form_fit" if is_closed_form else self.metric_names[0],
+            "best_metric": best_metric,
+            "validation_metrics": validation_metrics or {},
             "cfg": self.cfg.dump(),
         }
-        with open(mkdir(self.cfg.TRAIN.CHECKPOINT_DIR) / 'checkpoint_best.pth', "wb") as f:
-            torch.save(checkpoint, f)
+        checkpoint_path = mkdir(self.cfg.TRAIN.CHECKPOINT_DIR) / 'checkpoint_best.pth'
+        self._atomic_torch_save(checkpoint, checkpoint_path)
     
     def save_best_norm_module(self):
         assert self.cfg.NORM_MODULE.ENABLE
@@ -494,8 +530,8 @@ class Trainer:
             # "optimizer_state": self.optimizer_stat.state_dict(),
             "cfg": self.cfg.dump(),
         }
-        with open(mkdir(norm_module_cfg.TRAIN.CHECKPOINT_DIR) / 'checkpoint_best.pth', "wb") as f:
-            torch.save(checkpoint, f)
+        checkpoint_path = mkdir(norm_module_cfg.TRAIN.CHECKPOINT_DIR) / 'checkpoint_best.pth'
+        self._atomic_torch_save(checkpoint, checkpoint_path)
 
     def load_best_model(self):
         model_path = os.path.join(self.cfg.TRAIN.CHECKPOINT_DIR, "checkpoint_best.pth")
